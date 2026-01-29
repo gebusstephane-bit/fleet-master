@@ -5,10 +5,4 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
-  /* On ignore les erreurs ESLint pour le build */
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
-};
-
 export default nextConfig;

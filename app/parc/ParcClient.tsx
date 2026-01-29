@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -30,9 +30,25 @@ import {
 } from "@/components/ui/sheet";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { AlertTriangle, Eye, Pencil, Plus, Loader2, History, Wrench, Trash2, FileDown } from "lucide-react";
+import {
+  AlertTriangle,
+  Eye,
+  Pencil,
+  Plus,
+  Loader2,
+  History,
+  Wrench,
+  Trash2,
+  FileDown,
+} from "lucide-react";
 import { differenceInDays, isPast, parseISO } from "date-fns";
-import { supabase, type Vehicle, type VehicleType, type Intervention, VEHICLE_CONTROLS } from "@/lib/supabase";
+import {
+  supabase,
+  type Vehicle,
+  type VehicleType,
+  type Intervention,
+  VEHICLE_CONTROLS,
+} from "@/lib/supabase";
 import { toast } from "sonner";
 import { RoleSwitcher, useRole } from "@/components/RoleSwitcher";
 import { getPermissions } from "@/lib/role";
@@ -131,7 +147,7 @@ function isVehicleCritical(vehicle: Vehicle): boolean {
   return false;
 }
 
-export default function ParcPage() {
+export default function ParcClient() {
   const searchParams = useSearchParams();
   const filterParam = searchParams.get("filter");
   const router = useRouter();
@@ -180,7 +196,9 @@ export default function ParcPage() {
 
   // Recuperer les controles requis selon le type selectionne
   const controls = formData.type ? VEHICLE_CONTROLS[formData.type] : null;
-  const editControls = editFormData.type ? VEHICLE_CONTROLS[editFormData.type] : null;
+  const editControls = editFormData.type
+    ? VEHICLE_CONTROLS[editFormData.type]
+    : null;
 
   // Recuperer les vehicules depuis Supabase
   const fetchVehicles = async () => {
@@ -246,10 +264,7 @@ export default function ParcPage() {
         status: formData.status,
       };
 
-      const { data, error } = await supabase
-        .from("vehicles")
-        .insert([vehicleData])
-        .select();
+      const { error } = await supabase.from("vehicles").insert([vehicleData]);
 
       if (error) throw error;
 
@@ -348,7 +363,11 @@ export default function ParcPage() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.error);
       toast.success("Véhicule supprimé", {
-        description: `${deleteVehicle.immat} a été supprimé définitivement${json.deletedInterventions > 0 ? ` (${json.deletedInterventions} intervention(s) supprimée(s))` : ""}`,
+        description: `${deleteVehicle.immat} a été supprimé définitivement${
+          json.deletedInterventions > 0
+            ? ` (${json.deletedInterventions} intervention(s) supprimée(s))`
+            : ""
+        }`,
       });
       setDeleteOpen(false);
       setDeleteVehicle(null);
@@ -487,7 +506,10 @@ export default function ParcPage() {
                             type="date"
                             value={formData.date_ct}
                             onChange={(e) =>
-                              setFormData({ ...formData, date_ct: e.target.value })
+                              setFormData({
+                                ...formData,
+                                date_ct: e.target.value,
+                              })
                             }
                           />
                         </div>
@@ -502,7 +524,10 @@ export default function ParcPage() {
                               type="date"
                               value={formData.date_tachy}
                               onChange={(e) =>
-                                setFormData({ ...formData, date_tachy: e.target.value })
+                                setFormData({
+                                  ...formData,
+                                  date_tachy: e.target.value,
+                                })
                               }
                             />
                           </div>
@@ -516,7 +541,10 @@ export default function ParcPage() {
                               type="date"
                               value={formData.date_atp}
                               onChange={(e) =>
-                                setFormData({ ...formData, date_atp: e.target.value })
+                                setFormData({
+                                  ...formData,
+                                  date_atp: e.target.value,
+                                })
                               }
                             />
                           </div>
@@ -576,7 +604,8 @@ export default function ParcPage() {
               <div>
                 <p className="font-semibold text-red-900">
                   {vehiculesCritiques} vehicule{vehiculesCritiques > 1 ? "s" : ""}{" "}
-                  necessite{vehiculesCritiques > 1 ? "nt" : ""} une attention immediate
+                  necessite{vehiculesCritiques > 1 ? "nt" : ""} une attention
+                  immediate
                 </p>
                 <p className="text-sm text-red-700">
                   Controles a echeance critique (CT annuel, Tachygraphe ou ATP)
@@ -600,7 +629,9 @@ export default function ParcPage() {
             </div>
           ) : filteredVehicles.length === 0 ? (
             <div className="text-center py-12">
-              <p className="text-slate-500 font-medium">Aucun vehicule dans le parc</p>
+              <p className="text-slate-500 font-medium">
+                Aucun vehicule dans le parc
+              </p>
               <p className="text-sm text-slate-400 mt-2">
                 Cliquez sur "Ajouter un vehicule" pour commencer
               </p>
@@ -641,7 +672,9 @@ export default function ParcPage() {
                           <p className="font-semibold text-blue-600 font-mono">
                             {vehicle.immat}
                           </p>
-                          <p className="text-sm text-slate-500">{vehicle.marque}</p>
+                          <p className="text-sm text-slate-500">
+                            {vehicle.marque}
+                          </p>
                         </div>
                       </TableCell>
 
@@ -717,7 +750,10 @@ export default function ParcPage() {
 
                       {/* Actions */}
                       <TableCell className="text-right">
-                        <div className="flex justify-end gap-2" onClick={(e) => e.stopPropagation()}>
+                        <div
+                          className="flex justify-end gap-2"
+                          onClick={(e) => e.stopPropagation()}
+                        >
                           <Button
                             variant="ghost"
                             size="sm"
@@ -765,9 +801,7 @@ export default function ParcPage() {
             <SheetTitle className="font-mono text-blue-600 text-xl">
               {viewVehicle?.immat}
             </SheetTitle>
-            <SheetDescription>
-              {viewVehicle?.marque}
-            </SheetDescription>
+            <SheetDescription>{viewVehicle?.marque}</SheetDescription>
           </SheetHeader>
           {viewVehicle && (
             <div className="mt-6 space-y-6">
@@ -796,15 +830,21 @@ export default function ParcPage() {
                   </div>
                   <div>
                     <p className="text-slate-500">CT annuel</p>
-                    <p className="font-medium">{formatDate(viewVehicle.date_ct)}</p>
+                    <p className="font-medium">
+                      {formatDate(viewVehicle.date_ct)}
+                    </p>
                   </div>
                   <div>
                     <p className="text-slate-500">Tachygraphe</p>
-                    <p className="font-medium">{formatDate(viewVehicle.date_tachy)}</p>
+                    <p className="font-medium">
+                      {formatDate(viewVehicle.date_tachy)}
+                    </p>
                   </div>
                   <div>
                     <p className="text-slate-500">ATP</p>
-                    <p className="font-medium">{formatDate(viewVehicle.date_atp)}</p>
+                    <p className="font-medium">
+                      {formatDate(viewVehicle.date_atp)}
+                    </p>
                   </div>
                 </div>
               </div>
@@ -828,13 +868,23 @@ export default function ParcPage() {
                           <div className="flex items-start gap-2">
                             <Wrench className="w-4 h-4 text-slate-400 mt-0.5" />
                             <div>
-                              <p className="font-medium text-sm">{intervention.description}</p>
-                              <p className="text-xs text-slate-500">{intervention.garage}</p>
-                              <p className="text-xs text-slate-400">{intervention.date_creation ? new Date(intervention.date_creation).toLocaleDateString("fr-FR") : "-"}</p>
+                              <p className="font-medium text-sm">
+                                {intervention.description}
+                              </p>
+                              <p className="text-xs text-slate-500">
+                                {intervention.garage}
+                              </p>
+                              <p className="text-xs text-slate-400">
+                                {intervention.date_creation
+                                  ? new Date(intervention.date_creation).toLocaleDateString("fr-FR")
+                                  : "-"}
+                              </p>
                             </div>
                           </div>
                           <div className="text-right">
-                            <p className="font-semibold text-sm">{intervention.montant} EUR</p>
+                            <p className="font-semibold text-sm">
+                              {intervention.montant} EUR
+                            </p>
                             <Badge
                               variant="outline"
                               className={
@@ -900,9 +950,7 @@ export default function ParcPage() {
         <DialogContent className="sm:max-w-[500px]">
           <DialogHeader>
             <DialogTitle>Modifier le vehicule</DialogTitle>
-            <DialogDescription>
-              {editVehicle?.immat}
-            </DialogDescription>
+            <DialogDescription>{editVehicle?.immat}</DialogDescription>
           </DialogHeader>
           <form onSubmit={handleUpdateVehicle} className="space-y-4 py-4">
             <div className="space-y-2">
@@ -957,7 +1005,10 @@ export default function ParcPage() {
                   type="date"
                   value={editFormData.date_ct}
                   onChange={(e) =>
-                    setEditFormData({ ...editFormData, date_ct: e.target.value })
+                    setEditFormData({
+                      ...editFormData,
+                      date_ct: e.target.value,
+                    })
                   }
                 />
               </div>
@@ -972,7 +1023,10 @@ export default function ParcPage() {
                     type="date"
                     value={editFormData.date_tachy}
                     onChange={(e) =>
-                      setEditFormData({ ...editFormData, date_tachy: e.target.value })
+                      setEditFormData({
+                        ...editFormData,
+                        date_tachy: e.target.value,
+                      })
                     }
                   />
                 </div>
@@ -986,7 +1040,10 @@ export default function ParcPage() {
                     type="date"
                     value={editFormData.date_atp}
                     onChange={(e) =>
-                      setEditFormData({ ...editFormData, date_atp: e.target.value })
+                      setEditFormData({
+                        ...editFormData,
+                        date_atp: e.target.value,
+                      })
                     }
                   />
                 </div>

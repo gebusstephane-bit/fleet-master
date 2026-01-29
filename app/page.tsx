@@ -1,84 +1,101 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { AlertTriangle, Euro, FileText, TrendingUp, Wrench, ChevronRight } from "lucide-react";
-import { VEHICLES, INTERVENTIONS } from "@/lib/data";
-import { differenceInDays, isPast } from "date-fns";
+import { AlertTriangle, Euro, FileText, TrendingUp, Wrench, ChevronRight, Loader2 } from "lucide-react";
+import { supabase, type Vehicle, type Intervention } from "@/lib/supabase";
+import { differenceInDays, isPast, parseISO } from "date-fns";
 
 export default function DashboardPage() {
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [interventions, setInterventions] = useState<Intervention[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function fetchData() {
+      const [vRes, iRes] = await Promise.all([
+        supabase.from("vehicles").select("*").order("immat"),
+        supabase.from("interventions").select("*").order("created_at", { ascending: false }),
+      ]);
+
+      if (vRes.data) setVehicles(vRes.data as Vehicle[]);
+      if (iRes.data) setInterventions(iRes.data as Intervention[]);
+      setLoading(false);
+    }
+    fetchData();
+  }, []);
+
   const today = new Date();
 
-  // Vehicules critiques : date_mines ou date_tachy perimee ou < 7 jours
-  const criticalVehicles = VEHICLES.filter(
-    (v) =>
-      isPast(v.date_mines) ||
-      differenceInDays(v.date_mines, today) < 7 ||
-      isPast(v.date_tachy) ||
-      differenceInDays(v.date_tachy, today) < 7
-  );
+  // Véhicules critiques : date_ct ou date_tachy périmée ou < 7 jours
+  const criticalVehicles = vehicles.filter((v) => {
+    if (v.date_ct) {
+      const d = parseISO(v.date_ct);
+      if (isPast(d) || differenceInDays(d, today) < 7) return true;
+    }
+    if (v.date_tachy) {
+      const d = parseISO(v.date_tachy);
+      if (isPast(d) || differenceInDays(d, today) < 7) return true;
+    }
+    return false;
+  });
   const vehiculesCritiques = criticalVehicles.length;
 
-  // Budget maintenance : somme des interventions validees (pas pending)
-  const budgetMaintenance = INTERVENTIONS.filter(
-    (i) => i.status !== "pending"
-  ).reduce((sum, i) => sum + i.montant, 0);
+  // Budget maintenance : somme des interventions validées (pas pending, pas rejected)
+  const budgetMaintenance = interventions
+    .filter((i) => i.status !== "pending" && i.status !== "rejected")
+    .reduce((sum, i) => sum + (Number(i.montant) || 0), 0);
 
-  // Devis a valider : interventions en attente
-  const pendingInterventions = INTERVENTIONS.filter((i) => i.status === "pending");
+  // Devis à valider
+  const pendingInterventions = interventions.filter((i) => i.status === "pending");
   const devisAValider = pendingInterventions.length;
 
-  // Interventions planifiees (en maintenance)
-  const plannedInterventions = INTERVENTIONS.filter((i) => i.status === "planned");
+  // Interventions planifiées
+  const plannedInterventions = interventions.filter((i) => i.status === "planned");
 
   // Total du parc
-  const totalVehicules = VEHICLES.length;
+  const totalVehicules = vehicles.length;
+  const vehiculesEnMaintenance = vehicles.filter((v) => v.status === "maintenance").length;
 
-  // Vehicules en maintenance
-  const vehiculesEnMaintenance = VEHICLES.filter(
-    (v) => v.status === "maintenance"
-  ).length;
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <Loader2 className="w-8 h-8 animate-spin text-slate-400" />
+        <p className="ml-3 text-slate-500">Chargement…</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8">
       {/* Header */}
       <div>
         <h1 className="text-3xl font-bold text-slate-900">Dashboard</h1>
-        <p className="text-slate-600 mt-2">Vue d'ensemble de votre flotte</p>
+        <p className="text-slate-600 mt-2">Vue d&apos;ensemble de votre flotte</p>
       </div>
 
-      {/* Stat Cards - Cliquables */}
+      {/* Stat Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Vehicules Critiques */}
+        {/* Véhicules Critiques */}
         <Link href="/parc?filter=critical">
           <Card className={`cursor-pointer hover:shadow-lg transition-shadow ${vehiculesCritiques > 0 ? "border-red-200" : ""}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-slate-600">
-                Vehicules Critiques
+                Véhicules Critiques
               </CardTitle>
               <div className="flex items-center gap-1">
-                <AlertTriangle
-                  className={`w-5 h-5 ${
-                    vehiculesCritiques > 0 ? "text-red-600" : "text-slate-400"
-                  }`}
-                />
+                <AlertTriangle className={`w-5 h-5 ${vehiculesCritiques > 0 ? "text-red-600" : "text-slate-400"}`} />
                 <ChevronRight className="w-4 h-4 text-slate-400" />
               </div>
             </CardHeader>
             <CardContent>
-              <div
-                className={`text-4xl font-bold ${
-                  vehiculesCritiques > 0 ? "text-red-600" : "text-green-600"
-                }`}
-              >
+              <div className={`text-4xl font-bold ${vehiculesCritiques > 0 ? "text-red-600" : "text-green-600"}`}>
                 {vehiculesCritiques}
               </div>
               <p className="text-xs text-slate-500 mt-2">
-                {vehiculesCritiques > 0
-                  ? "Maintenance urgente requise"
-                  : "Tous les vehicules sont a jour"}
+                {vehiculesCritiques > 0 ? "Maintenance urgente requise" : "Tous les véhicules sont à jour"}
               </p>
-              {/* Mini-liste */}
               {criticalVehicles.length > 0 && (
                 <div className="mt-3 pt-3 border-t border-slate-100 space-y-1">
                   {criticalVehicles.slice(0, 5).map((v) => (
@@ -93,42 +110,31 @@ export default function DashboardPage() {
           </Card>
         </Link>
 
-        {/* Devis a Valider */}
+        {/* Devis à Valider */}
         <Link href="/maintenance?tab=validation">
           <Card className={`cursor-pointer hover:shadow-lg transition-shadow ${devisAValider > 0 ? "border-orange-200" : ""}`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-slate-600">
-                Devis a Valider
+                Devis à Valider
               </CardTitle>
               <div className="flex items-center gap-1">
-                <FileText
-                  className={`w-5 h-5 ${
-                    devisAValider > 0 ? "text-orange-600" : "text-slate-400"
-                  }`}
-                />
+                <FileText className={`w-5 h-5 ${devisAValider > 0 ? "text-orange-600" : "text-slate-400"}`} />
                 <ChevronRight className="w-4 h-4 text-slate-400" />
               </div>
             </CardHeader>
             <CardContent>
-              <div
-                className={`text-4xl font-bold ${
-                  devisAValider > 0 ? "text-orange-600" : "text-slate-900"
-                }`}
-              >
+              <div className={`text-4xl font-bold ${devisAValider > 0 ? "text-orange-600" : "text-slate-900"}`}>
                 {devisAValider}
               </div>
               <p className="text-xs text-slate-500 mt-2">
-                {devisAValider > 0
-                  ? "En attente d'approbation"
-                  : "Aucun devis en attente"}
+                {devisAValider > 0 ? "En attente d'approbation" : "Aucun devis en attente"}
               </p>
-              {/* Mini-liste */}
               {pendingInterventions.length > 0 && (
                 <div className="mt-3 pt-3 border-t border-slate-100 space-y-1">
                   {pendingInterventions.slice(0, 5).map((i) => (
                     <div key={i.id} className="text-xs flex justify-between">
                       <span className="font-mono font-semibold text-orange-600">{i.immat}</span>
-                      <span className="text-slate-500">{i.montant} EUR</span>
+                      <span className="text-slate-500">{(Number(i.montant) || 0).toLocaleString()} EUR</span>
                     </div>
                   ))}
                 </div>
@@ -153,10 +159,7 @@ export default function DashboardPage() {
               <div className="text-4xl font-bold text-blue-600">
                 {plannedInterventions.length}
               </div>
-              <p className="text-xs text-slate-500 mt-2">
-                RDV planifies
-              </p>
-              {/* Mini-liste */}
+              <p className="text-xs text-slate-500 mt-2">RDV planifiés</p>
               {plannedInterventions.length > 0 && (
                 <div className="mt-3 pt-3 border-t border-slate-100 space-y-1">
                   {plannedInterventions.slice(0, 5).map((i) => (
@@ -174,7 +177,7 @@ export default function DashboardPage() {
         </Link>
       </div>
 
-      {/* Alerte si vehicules critiques */}
+      {/* Alerte si véhicules critiques */}
       {vehiculesCritiques > 0 && (
         <Card className="border-red-200 bg-red-50">
           <CardContent className="pt-6">
@@ -182,16 +185,15 @@ export default function DashboardPage() {
               <AlertTriangle className="w-6 h-6 text-red-600" />
               <div>
                 <p className="font-semibold text-red-900">
-                  Action requise : {vehiculesCritiques} vehicule
-                  {vehiculesCritiques > 1 ? "s" : ""} en alerte
+                  Action requise : {vehiculesCritiques} véhicule{vehiculesCritiques > 1 ? "s" : ""} en alerte
                 </p>
                 <p className="text-sm text-red-700">
-                  Des controles techniques ou tachygraphes arrivent a echeance.
+                  Des contrôles techniques ou tachygraphes arrivent à échéance.
                   Consultez la page{" "}
                   <Link href="/parc?filter=critical" className="underline font-medium">
                     Mon Parc
                   </Link>{" "}
-                  pour plus de details.
+                  pour plus de détails.
                 </p>
               </div>
             </div>
@@ -201,61 +203,54 @@ export default function DashboardPage() {
 
       {/* Vue d'ensemble du parc */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Synthese du parc */}
+        {/* Synthèse du parc */}
         <Card>
           <CardHeader>
-            <CardTitle>Synthese du parc</CardTitle>
+            <CardTitle>Synthèse du parc</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
-              <span className="text-slate-700 font-medium">
-                Total vehicules
-              </span>
-              <span className="text-2xl font-bold text-slate-900">
-                {totalVehicules}
-              </span>
+              <span className="text-slate-700 font-medium">Total véhicules</span>
+              <span className="text-2xl font-bold text-slate-900">{totalVehicules}</span>
             </div>
             <Link href="/parc">
               <div className="flex items-center justify-between p-3 bg-green-50 rounded-lg hover:bg-green-100 transition-colors cursor-pointer">
                 <span className="text-green-700 font-medium">Actifs</span>
                 <span className="text-2xl font-bold text-green-600">
-                  {VEHICLES.filter((v) => v.status === "actif").length}
+                  {vehicles.filter((v) => v.status === "actif").length}
                 </span>
               </div>
             </Link>
             <Link href="/planning">
               <div className="flex items-center justify-between p-3 bg-orange-50 rounded-lg hover:bg-orange-100 transition-colors cursor-pointer">
                 <span className="text-orange-700 font-medium">En maintenance</span>
-                <span className="text-2xl font-bold text-orange-600">
-                  {vehiculesEnMaintenance}
-                </span>
+                <span className="text-2xl font-bold text-orange-600">{vehiculesEnMaintenance}</span>
               </div>
             </Link>
             <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
               <span className="text-slate-700 font-medium">Au garage</span>
               <span className="text-2xl font-bold text-slate-600">
-                {VEHICLES.filter((v) => v.status === "garage").length}
+                {vehicles.filter((v) => v.status === "garage").length}
               </span>
             </div>
           </CardContent>
         </Card>
 
-        {/* Activite recente */}
+        {/* Activité récente */}
         <Card>
           <CardHeader>
-            <CardTitle>Activite recente</CardTitle>
+            <CardTitle>Activité récente</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            {INTERVENTIONS.slice(0, 4).map((intervention) => (
-              <Link
-                key={intervention.id}
-                href={`/maintenance`}
-              >
+            {interventions.slice(0, 4).map((intervention) => (
+              <Link key={intervention.id} href="/maintenance">
                 <div className="flex items-start gap-3 pb-3 border-b border-slate-100 last:border-0 hover:bg-slate-50 rounded p-2 -m-2 cursor-pointer transition-colors">
                   <div
                     className={`p-2 rounded-lg ${
                       intervention.status === "completed"
                         ? "bg-slate-100"
+                        : intervention.status === "rejected"
+                        ? "bg-red-100"
                         : intervention.status === "planned"
                         ? "bg-green-100"
                         : intervention.status === "approved_waiting_rdv"
@@ -267,6 +262,8 @@ export default function DashboardPage() {
                   >
                     {intervention.status === "completed" ? (
                       <TrendingUp className="w-4 h-4 text-slate-600" />
+                    ) : intervention.status === "rejected" ? (
+                      <AlertTriangle className="w-4 h-4 text-red-600" />
                     ) : intervention.status === "planned" ? (
                       <TrendingUp className="w-4 h-4 text-green-600" />
                     ) : intervention.status === "pending" ? (
@@ -280,15 +277,21 @@ export default function DashboardPage() {
                       {intervention.description}
                     </p>
                     <p className="text-xs text-slate-500 mt-1">
-                      <span className="font-mono text-blue-600">{intervention.immat}</span> - {intervention.dateCreation}
+                      <span className="font-mono text-blue-600">{intervention.immat}</span> -{" "}
+                      {intervention.date_creation
+                        ? new Date(intervention.date_creation).toLocaleDateString("fr-FR")
+                        : "-"}
                     </p>
                   </div>
                   <span className="text-sm font-semibold text-slate-900">
-                    {intervention.montant.toLocaleString()} EUR
+                    {(Number(intervention.montant) || 0).toLocaleString()} EUR
                   </span>
                 </div>
               </Link>
             ))}
+            {interventions.length === 0 && (
+              <p className="text-sm text-slate-500 text-center py-4">Aucune intervention</p>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -304,7 +307,7 @@ export default function DashboardPage() {
             {budgetMaintenance.toLocaleString()} EUR
           </div>
           <p className="text-sm text-slate-500 mt-2">
-            Total des interventions validees et planifiees
+            Total des interventions validées et planifiées
           </p>
         </CardContent>
       </Card>

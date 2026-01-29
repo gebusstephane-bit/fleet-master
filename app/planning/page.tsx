@@ -12,15 +12,17 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { supabase, type Intervention } from "@/lib/supabase";
-import { Calendar, Clock, Truck, Wrench, MapPin, Building2, Euro, RefreshCw, Loader2 } from "lucide-react";
+import { Separator } from "@/components/ui/separator";
+import { Calendar, Clock, Truck, Wrench, MapPin, Building2, Euro, RefreshCw, Loader2, Hash, FileDown } from "lucide-react";
 import { format, parseISO, isBefore, addDays } from "date-fns";
 import { fr } from "date-fns/locale";
 import { RoleSwitcher, useRole } from "@/components/RoleSwitcher";
 import { toast } from "sonner";
+import { exportRepairsPdf } from "@/lib/pdf";
 
 // Type etendu avec immat du vehicule
 interface PlannedIntervention extends Intervention {
-  vehicles?: { immat: string } | null;
+  vehicle?: { immat: string } | null;
 }
 
 // Fonction pour verifier si une intervention est imminente (< 7 jours)
@@ -99,9 +101,10 @@ export default function PlanningPage() {
   };
 
   // Obtenir l'immat (depuis join ou champ immat)
-  const getImmat = (intervention: PlannedIntervention): string => {
-    return intervention.vehicles?.immat || intervention.immat || "N/A";
-  };
+ const getImmat = (intervention: PlannedIntervention): string => {
+  return intervention.vehicle?.immat || intervention.immat || "N/A";
+};
+
 
   return (
     <div className="space-y-8">
@@ -125,6 +128,22 @@ export default function PlanningPage() {
               <RefreshCw className="w-4 h-4 mr-2" />
             )}
             Actualiser
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => {
+              try {
+                exportRepairsPdf(interventions, { title: "Planning — Interventions planifiées", filter: "RDV confirmés" });
+                toast.success("PDF exporté");
+              } catch (err: any) {
+                console.error("[PDF]", err);
+                toast.error("Erreur export PDF");
+              }
+            }}
+            disabled={interventions.length === 0}
+          >
+            <FileDown className="w-4 h-4 mr-2" />
+            Exporter PDF
           </Button>
           <RoleSwitcher onRoleChange={setRole} />
         </div>
@@ -336,54 +355,103 @@ export default function PlanningPage() {
 
       {/* Sheet Detail */}
       <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
-        <SheetContent>
-          <SheetHeader>
-            <SheetTitle>{selectedIntervention?.vehicule}</SheetTitle>
-            <SheetDescription className="font-mono text-blue-600">
-              {selectedIntervention ? getImmat(selectedIntervention) : ""}
-            </SheetDescription>
+        <SheetContent className="sm:max-w-lg overflow-y-auto">
+          <SheetHeader className="pb-0">
+            <div className="flex items-start justify-between gap-3">
+              <div className="space-y-1">
+                <SheetTitle className="text-xl">{selectedIntervention?.vehicule}</SheetTitle>
+                <SheetDescription className="font-mono text-base font-semibold text-blue-600">
+                  {selectedIntervention ? getImmat(selectedIntervention) : ""}
+                </SheetDescription>
+              </div>
+              <Badge className="shrink-0 bg-green-600 text-white">RDV planifié</Badge>
+            </div>
           </SheetHeader>
           {selectedIntervention && (
-            <div className="mt-6 space-y-4">
-              <div>
-                <p className="text-sm text-slate-500">Statut</p>
-                <Badge className="bg-green-600 text-white">RDV planifie</Badge>
-              </div>
-              <div>
-                <p className="text-sm text-slate-500">Description</p>
-                <p className="font-medium">{selectedIntervention.description}</p>
-              </div>
-              <div>
-                <p className="text-sm text-slate-500">Garage</p>
-                <div className="flex items-center gap-2">
-                  <Building2 className="w-4 h-4 text-slate-400" />
-                  <p className="font-medium">{selectedIntervention.garage}</p>
-                </div>
-              </div>
-              <div>
-                <p className="text-sm text-slate-500">Montant</p>
-                <div className="flex items-center gap-2">
-                  <Euro className="w-4 h-4 text-slate-400" />
-                  <p className="text-xl font-bold">{(selectedIntervention.montant || 0).toLocaleString()} EUR</p>
-                </div>
-              </div>
-              {selectedIntervention.rdv_date && (
-                <div className="p-4 bg-green-50 rounded-lg border border-green-200">
-                  <p className="text-sm text-green-700 font-medium mb-2">RDV confirme</p>
-                  <div className="flex items-center gap-2 mb-2">
-                    <Calendar className="w-4 h-4 text-green-600" />
-                    <p className="font-semibold text-green-800">
-                      {format(parseISO(selectedIntervention.rdv_date), "EEEE d MMMM yyyy 'a' HH:mm", { locale: fr })}
-                    </p>
-                  </div>
-                  {selectedIntervention.rdv_lieu && (
-                    <div className="flex items-center gap-2">
-                      <MapPin className="w-4 h-4 text-green-600" />
-                      <p className="text-green-700">{selectedIntervention.rdv_lieu}</p>
+            <div className="mt-6 space-y-6">
+              {/* Résumé */}
+              <div className="space-y-4">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Résumé</h3>
+                <div className="grid gap-3">
+                  <div className="flex items-start gap-3 p-3 bg-slate-50 rounded-lg">
+                    <Wrench className="w-4 h-4 text-slate-400 mt-0.5 shrink-0" />
+                    <div>
+                      <p className="text-xs text-slate-500">Description</p>
+                      <p className="font-medium text-slate-900">{selectedIntervention.description}</p>
                     </div>
-                  )}
+                  </div>
+                  <div className="flex items-start gap-3 p-3 bg-slate-50 rounded-lg">
+                    <Building2 className="w-4 h-4 text-slate-400 mt-0.5 shrink-0" />
+                    <div>
+                      <p className="text-xs text-slate-500">Garage</p>
+                      <p className="font-medium text-slate-900">{selectedIntervention.garage}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-3 p-3 bg-slate-50 rounded-lg">
+                    <Euro className="w-4 h-4 text-slate-400 mt-0.5 shrink-0" />
+                    <div>
+                      <p className="text-xs text-slate-500">Montant</p>
+                      <p className="text-lg font-bold text-slate-900">
+                        {(selectedIntervention.montant || 0).toLocaleString("fr-FR")} EUR
+                      </p>
+                    </div>
+                  </div>
                 </div>
+              </div>
+
+              <Separator />
+
+              {/* Rendez-vous */}
+              {selectedIntervention.rdv_date && (
+                <>
+                  <div className="space-y-3">
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Rendez-vous</h3>
+                    <div className="p-4 bg-green-50 rounded-lg border border-green-200 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <Calendar className="w-4 h-4 text-green-600 shrink-0" />
+                        <p className="font-semibold text-green-800">
+                          {format(parseISO(selectedIntervention.rdv_date), "EEEE d MMMM yyyy 'à' HH:mm", { locale: fr })}
+                        </p>
+                      </div>
+                      {selectedIntervention.rdv_lieu && (
+                        <div className="flex items-center gap-2">
+                          <MapPin className="w-4 h-4 text-green-600 shrink-0" />
+                          <p className="text-green-700">{selectedIntervention.rdv_lieu}</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <Separator />
+                </>
               )}
+
+              {/* Informations */}
+              <div className="space-y-3">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Informations</h3>
+                <div className="grid gap-2 text-sm">
+                  <div className="flex items-center gap-2 text-slate-600">
+                    <Clock className="w-3.5 h-3.5 text-slate-400" />
+                    <span>Créé le {selectedIntervention.date_creation
+                      ? new Date(selectedIntervention.date_creation).toLocaleString("fr-FR")
+                      : "-"}</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-slate-400">
+                    <Hash className="w-3.5 h-3.5" />
+                    <span className="font-mono text-xs select-all">{selectedIntervention.id}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Fermer */}
+              <div className="pt-2">
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => setDetailOpen(false)}
+                >
+                  Fermer
+                </Button>
+              </div>
             </div>
           )}
         </SheetContent>

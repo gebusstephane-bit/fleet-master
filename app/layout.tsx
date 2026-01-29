@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
-import { AppSidebar } from "@/components/AppSidebar";
+import { AuthProvider } from "@/components/AuthProvider";
 import { Toaster } from "@/components/ui/sonner";
+import { LayoutShell } from "@/components/LayoutShell";
+import { APP_NAME, APP_DESCRIPTION } from "@/lib/branding";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -10,8 +12,8 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "FleetMaster Pro",
-  description: "Gestion de flotte automobile professionnelle",
+  title: APP_NAME,
+  description: APP_DESCRIPTION,
 };
 
 export default function RootLayout({
@@ -22,12 +24,9 @@ export default function RootLayout({
   return (
     <html lang="fr">
       <body className={`${inter.variable} font-sans antialiased`}>
-        <div className="flex min-h-screen">
-          <AppSidebar />
-          <main className="flex-1 ml-64 bg-slate-50 p-8">
-            {children}
-          </main>
-        </div>
+        <AuthProvider>
+          <LayoutShell>{children}</LayoutShell>
+        </AuthProvider>
         <Toaster />
       </body>
     </html>

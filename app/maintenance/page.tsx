@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { supabase, type Intervention } from "@/lib/supabase";
 
@@ -25,11 +25,31 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { Separator } from "@/components/ui/separator";
 
-import { Check, X, Plus, Wrench, Building2, Euro, Calendar, History } from "lucide-react";
+import {
+  Check,
+  X,
+  Plus,
+  Wrench,
+  Building2,
+  Euro,
+  Calendar,
+  History,
+  FileText,
+  Download,
+  Loader2,
+  Trash2,
+  MapPin,
+  Clock,
+  Hash,
+  FileDown,
+} from "lucide-react";
 import { toast } from "sonner";
-import { type InterventionStatus, INTERVENTIONS as MOCK_INTERVENTIONS } from "@/lib/data";
+import { type InterventionStatus } from "@/lib/supabase";
+import { INTERVENTIONS as MOCK_INTERVENTIONS } from "@/lib/data";
 import { RoleSwitcher, useRole } from "@/components/RoleSwitcher";
+import { exportRepairsPdf } from "@/lib/pdf";
 import { getPermissions } from "@/lib/role";
 
 type VehicleLite = {
@@ -42,7 +62,29 @@ type VehicleLite = {
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// Fonction helper pour obtenir les infos du badge de statut
+const DEVIS_BUCKET = "devis-interventions";
+
+async function sendNotify(
+  type: string,
+  interventionId: string,
+  extra?: Record<string, any>
+) {
+  try {
+    const res = await fetch("/api/notify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type, interventionId, extra }),
+    });
+    const data = await res.json();
+    if (!data.success) {
+      console.warn("[NOTIFY] Échec:", data.message);
+    } else {
+    }
+  } catch (err) {
+    console.error("[NOTIFY] Erreur réseau:", err);
+  }
+}
+
 function getStatusBadge(status: InterventionStatus) {
   switch (status) {
     case "pending":
@@ -68,6 +110,12 @@ function getStatusBadge(status: InterventionStatus) {
         label: "Terminé",
         variant: "secondary" as const,
         className: "bg-slate-500 text-white",
+      };
+    case "rejected":
+      return {
+        label: "Refusé",
+        variant: "destructive" as const,
+        className: "bg-red-600 hover:bg-red-700 text-white",
       };
     default:
       return {
@@ -100,6 +148,9 @@ export default function MaintenancePage() {
   const [newGarage, setNewGarage] = useState("");
   const [newMontant, setNewMontant] = useState<string>("0");
   const [newVehicleId, setNewVehicleId] = useState<string | null>(null);
+  const [devisFile, setDevisFile] = useState<File | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isCreating, setIsCreating] = useState(false);
 
   // Modal RDV
   const [rdvModalOpen, setRdvModalOpen] = useState(false);
@@ -112,7 +163,20 @@ export default function MaintenancePage() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailIntervention, setDetailIntervention] = useState<Intervention | null>(null);
 
-  // Charger les véhicules (pour lier vehicle_id)
+  // Download state
+  const [downloading, setDownloading] = useState<string | null>(null);
+
+  // Reject dialog
+  const [rejectModalOpen, setRejectModalOpen] = useState(false);
+  const [rejectTarget, setRejectTarget] = useState<Intervention | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
+  const [rejecting, setRejecting] = useState(false);
+
+  // Delete intervention dialog
+  const [deleteTarget, setDeleteTarget] = useState<Intervention | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  // ---------- Data fetching ----------
   const fetchVehicles = useCallback(async () => {
     const { data, error } = await supabase
       .from("vehicles")
@@ -126,7 +190,6 @@ export default function MaintenancePage() {
     setVehicles((data || []) as VehicleLite[]);
   }, []);
 
-  // Charger les interventions depuis Supabase (fallback mock si erreur)
   const fetchInterventions = useCallback(async () => {
     try {
       setLoading(true);
@@ -138,8 +201,6 @@ export default function MaintenancePage() {
 
       if (error) {
         console.error("Erreur Supabase:", error);
-
-        // Fallback sur données mock
         const mockData = MOCK_INTERVENTIONS.map((m: any) => ({
           ...m,
           date_creation: m.dateCreation,
@@ -151,7 +212,6 @@ export default function MaintenancePage() {
 
       if (!data || data.length === 0) {
         setInterventions([]);
-        // toast.info("Aucune intervention en base"); // optionnel
       } else {
         setInterventions(data as Intervention[]);
       }
@@ -173,7 +233,7 @@ export default function MaintenancePage() {
     fetchInterventions();
   }, [fetchVehicles, fetchInterventions]);
 
-  // Auto-match vehicle_id à partir de l'immat saisie
+  // Auto-match vehicle_id
   const matchedVehicle = useMemo(() => {
     const immat = newImmat.trim();
     if (!immat) return null;
@@ -183,8 +243,6 @@ export default function MaintenancePage() {
   useEffect(() => {
     if (matchedVehicle) {
       setNewVehicleId(matchedVehicle.id);
-
-      // Auto-remplir "Véhicule" si vide
       if (!newVehicule.trim()) {
         const label = [matchedVehicle.marque, matchedVehicle.type].filter(Boolean).join(" - ");
         setNewVehicule(label || "");
@@ -195,13 +253,14 @@ export default function MaintenancePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matchedVehicle]);
 
-  // Statistiques
+  // Stats
   const pendingCount = interventions.filter((i: any) => i.status === "pending").length;
   const waitingRdvCount = interventions.filter((i: any) => i.status === "approved_waiting_rdv").length;
   const plannedCount = interventions.filter((i: any) => i.status === "planned").length;
   const completedCount = interventions.filter((i: any) => i.status === "completed").length;
+  const rejectedCount = interventions.filter((i: any) => i.status === "rejected").length;
+  const historyCount = completedCount + rejectedCount;
 
-  // Filtrer selon l'onglet
   const getFilteredInterventions = () => {
     switch (activeTab) {
       case "validation":
@@ -211,13 +270,81 @@ export default function MaintenancePage() {
       case "planned":
         return interventions.filter((i: any) => i.status === "planned");
       case "history":
-        return interventions.filter((i: any) => i.status === "completed");
+        return interventions.filter((i: any) => ["completed", "rejected"].includes(i.status));
       default:
-        return interventions.filter((i: any) => i.status !== "completed");
+        return interventions.filter((i: any) => !["completed", "rejected"].includes(i.status));
     }
   };
 
-  // Créer une intervention (EN BASE)
+  // ---------- Devis upload helper ----------
+  async function uploadDevis(
+    interventionId: string,
+    file: File
+  ): Promise<{ ok: boolean; path?: string }> {
+    const timestamp = Date.now();
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const storagePath = `interventions/${interventionId}/${timestamp}-${safeName}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from(DEVIS_BUCKET)
+      .upload(storagePath, file, {
+        contentType: file.type || "application/pdf",
+        upsert: false,
+      });
+
+    if (uploadError) {
+      console.error("[UPLOAD] error", uploadError);
+      toast.error("Erreur upload devis", { description: uploadError.message });
+      return { ok: false };
+    }
+
+    const { error: updateError } = await supabase
+      .from("interventions")
+      .update({
+        devis_path: storagePath,
+        devis_filename: file.name,
+        devis_uploaded_at: new Date().toISOString(),
+      })
+      .eq("id", interventionId);
+
+    if (updateError) {
+      console.error("[DEVIS] Update intervention error:", updateError);
+      toast.error("Devis uploadé mais erreur enregistrement", { description: updateError.message });
+      return { ok: false };
+    }
+
+    return { ok: true, path: storagePath };
+  }
+
+  // ---------- Devis download ----------
+  async function handleDownloadDevis(intervention: Intervention) {
+    const path = intervention.devis_path;
+    if (!path) return;
+
+    setDownloading(intervention.id);
+    try {
+      const { data, error } = await supabase.storage
+        .from(DEVIS_BUCKET)
+        .createSignedUrl(path, 60);
+
+      if (error || !data?.signedUrl) {
+        console.error("[DEVIS] Signed URL error:", error);
+        toast.error("Impossible de télécharger le devis", {
+          description: error?.message || "URL non générée",
+        });
+        return;
+      }
+
+      window.open(data.signedUrl, "_blank");
+    } catch (err: any) {
+      console.error("[DEVIS] Download error:", err);
+      toast.error("Erreur téléchargement", { description: err?.message });
+    } finally {
+      setDownloading(null);
+    }
+  }
+
+  // ---------- Create intervention ----------
   const handleCreateIntervention = async () => {
     try {
       const vehicule = newVehicule.trim();
@@ -236,6 +363,15 @@ export default function MaintenancePage() {
         return;
       }
 
+      // Validate devis file if present
+      if (devisFile && !devisFile.type.includes("pdf")) {
+        toast.error("Le devis doit être un fichier PDF");
+        return;
+      }
+
+      setIsCreating(true);
+
+      // 1. Insert intervention
       const payload: any = {
         vehicule,
         immat,
@@ -243,8 +379,8 @@ export default function MaintenancePage() {
         garage,
         montant: montantNumber,
         status: "pending" as InterventionStatus,
-        date_creation: new Date().toISOString(), // IMPORTANT: ISO (compatible parseISO partout)
-        vehicle_id: newVehicleId, // peut être null si immat inconnue
+        date_creation: new Date().toISOString(),
+        vehicle_id: newVehicleId,
       };
 
       const { data, error } = await supabase
@@ -255,15 +391,37 @@ export default function MaintenancePage() {
 
       if (error) throw error;
 
-      setInterventions((prev) => [data as Intervention, ...prev]);
+      const created = data as Intervention;
+
+      // 2. Upload devis if file selected
+      if (devisFile) {
+        const result = await uploadDevis(created.id, devisFile);
+        if (result.ok && result.path) {
+          created.devis_path = result.path;
+          created.devis_filename = devisFile.name;
+          created.devis_uploaded_at = new Date().toISOString();
+        } else if (!result.ok) {
+          toast.warning("Intervention créée mais devis non envoyé");
+        }
+      }
+
+      setInterventions((prev) => [created, ...prev]);
 
       toast.success("Demande créée", {
-        description: newVehicleId
+        description: devisFile
+          ? "Intervention enregistrée avec devis PDF"
+          : newVehicleId
           ? "Intervention enregistrée et liée au véhicule"
-          : "Intervention enregistrée (immat non trouvée dans le parc, non liée)",
+          : "Intervention enregistrée (immat non trouvée dans le parc)",
       });
 
-      // Reset + fermeture
+      // Notifications (non bloquantes)
+      sendNotify("INTERVENTION_CREATED", created.id);
+      if (devisFile && created.devis_path) {
+        sendNotify("DEVIS_UPLOADED", created.id);
+      }
+
+      // Reset
       setIsDialogOpen(false);
       setNewVehicule("");
       setNewImmat("");
@@ -271,18 +429,23 @@ export default function MaintenancePage() {
       setNewGarage("");
       setNewMontant("0");
       setNewVehicleId(null);
+      setDevisFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+
+      // Refetch to get actual devis_path from DB
+      fetchInterventions();
     } catch (err: any) {
       console.error("Erreur création intervention:", err);
       toast.error("Impossible de créer l'intervention", { description: err?.message });
+    } finally {
+      setIsCreating(false);
     }
   };
 
-  // Action de validation devis (directeur uniquement)
+  // ---------- Other actions ----------
   const handleApproveDevis = async (id: string) => {
     if (!UUID_REGEX.test(id)) {
-      toast.error("Mode démo : action non disponible", {
-        description: "Créez des interventions dans Supabase pour utiliser cette fonctionnalité",
-      });
+      toast.error("Mode démo : action non disponible");
       return;
     }
 
@@ -302,26 +465,70 @@ export default function MaintenancePage() {
         it.id === id ? { ...it, status: "approved_waiting_rdv" as InterventionStatus } : it
       )
     );
-
     toast.success("Devis validé", { description: "En attente de planification du RDV" });
+    sendNotify("DEVIS_VALIDATED", id);
   };
 
-  // Action de refus (local uniquement)
-  const handleReject = (id: string, description: string) => {
-    setInterventions((prev) => prev.filter((i: any) => i.id !== id));
-    toast.error("Devis refusé", {
-      description: `La demande "${description}" a été refusée`,
-    });
+  const openRejectModal = (intervention: Intervention) => {
+    setRejectTarget(intervention);
+    setRejectReason("");
+    setRejectModalOpen(true);
   };
 
-  // Ouvrir modal RDV
+  const handleRejectConfirm = async () => {
+    if (!rejectTarget) return;
+    const id = rejectTarget.id;
+
+    if (!UUID_REGEX.test(id)) {
+      toast.error("Mode démo : action non disponible");
+      return;
+    }
+
+    setRejecting(true);
+    try {
+      const res = await fetch("/api/interventions/reject", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ interventionId: id, reason: rejectReason.trim() || null }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error);
+
+      // Update local state
+      setInterventions((prev) =>
+        prev.map((it) =>
+          it.id === id
+            ? {
+                ...it,
+                status: "rejected" as InterventionStatus,
+                rejected_reason: rejectReason.trim() || null,
+                rejected_at: new Date().toISOString(),
+              }
+            : it
+        )
+      );
+
+      toast.success("Devis refusé", {
+        description: `"${rejectTarget.description}" — déplacé dans l'historique`,
+      });
+
+      sendNotify("DEVIS_REFUSED", id);
+      setRejectModalOpen(false);
+      setRejectTarget(null);
+    } catch (err: any) {
+      console.error("[REJECT] Erreur:", err);
+      toast.error("Erreur lors du refus", { description: err?.message });
+    } finally {
+      setRejecting(false);
+    }
+  };
+
   const openRdvModal = (intervention: Intervention) => {
     setSelectedIntervention(intervention);
     setRdvLieu((intervention as any).garage || "");
     setRdvModalOpen(true);
   };
 
-  // Planifier RDV (agent_parc uniquement)
   const handlePlanRdv = async () => {
     if (!selectedIntervention || !rdvDate || !rdvTime || !rdvLieu) {
       toast.error("Veuillez remplir tous les champs");
@@ -329,9 +536,7 @@ export default function MaintenancePage() {
     }
 
     if (!UUID_REGEX.test(String((selectedIntervention as any).id))) {
-      toast.error("Mode démo : action non disponible", {
-        description: "Créez des interventions dans Supabase pour utiliser cette fonctionnalité",
-      });
+      toast.error("Mode démo : action non disponible");
       return;
     }
 
@@ -352,39 +557,27 @@ export default function MaintenancePage() {
       return;
     }
 
-    // Mettre à jour l'état local
     setInterventions((prev) =>
       prev.map((it: any) =>
         it.id === (selectedIntervention as any).id
-          ? {
-              ...it,
-              status: "planned" as InterventionStatus,
-              rdv_date: rdvDateTime,
-              rdv_lieu: rdvLieu,
-            }
+          ? { ...it, status: "planned" as InterventionStatus, rdv_date: rdvDateTime, rdv_lieu: rdvLieu }
           : it
       )
     );
-
-    toast.success("RDV planifié", { description: "Intervention déplacée dans l’onglet Planifiés" });
-
-    // Reset modal
+    toast.success("RDV planifié");
+    sendNotify("RDV_PLANNED", (selectedIntervention as any).id);
     setRdvModalOpen(false);
     setSelectedIntervention(null);
     setRdvDate("");
     setRdvTime("");
     setRdvLieu("");
-
     router.push("/planning");
     router.refresh();
   };
 
-  // Terminer intervention (agent_parc)
   const handleComplete = async (id: string) => {
     if (!UUID_REGEX.test(id)) {
-      toast.error("Mode démo : action non disponible", {
-        description: "Créez des interventions dans Supabase pour utiliser cette fonctionnalité",
-      });
+      toast.error("Mode démo : action non disponible");
       return;
     }
 
@@ -399,20 +592,42 @@ export default function MaintenancePage() {
       return;
     }
 
-    toast.success("Intervention terminée", { description: "Déplacée dans l’historique" });
-
+    toast.success("Intervention terminée", { description: "Déplacée dans l'historique" });
+    sendNotify("INTERVENTION_COMPLETED", id);
     await fetchInterventions();
     setActiveTab("history");
   };
 
-  // Ouvrir detail
   const openDetail = (intervention: Intervention) => {
     setDetailIntervention(intervention);
     setDetailOpen(true);
   };
 
+  // Delete intervention
+  const handleDeleteIntervention = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      const res = await fetch("/api/admin/delete-intervention", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ interventionId: deleteTarget.id }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error);
+      toast.success("Intervention supprimée définitivement");
+      setDeleteTarget(null);
+      setInterventions((prev) => prev.filter((i) => i.id !== deleteTarget.id));
+    } catch (err: any) {
+      toast.error("Erreur de suppression", { description: err?.message });
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const filteredInterventions = getFilteredInterventions();
 
+  // ---------- Render ----------
   return (
     <div className="space-y-8">
       {/* Header */}
@@ -423,9 +638,25 @@ export default function MaintenancePage() {
         </div>
 
         <div className="flex items-center gap-4">
+          <Button
+            variant="outline"
+            onClick={() => {
+              try {
+                exportRepairsPdf(filteredInterventions, { title: "Rapport Réparations", filter: activeTab === "history" ? "Historique" : "En cours" });
+                toast.success("PDF exporté");
+              } catch (err: any) {
+                console.error("[PDF]", err);
+                toast.error("Erreur export PDF");
+              }
+            }}
+            disabled={filteredInterventions.length === 0}
+          >
+            <FileDown className="w-4 h-4 mr-2" />
+            Exporter PDF
+          </Button>
+
           <RoleSwitcher onRoleChange={setRole} />
 
-          {/* Bouton Nouvelle Demande */}
           <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
             <DialogTrigger asChild>
               <Button>
@@ -436,7 +667,7 @@ export default function MaintenancePage() {
 
             <DialogContent className="sm:max-w-[520px]">
               <DialogHeader>
-                <DialogTitle>Nouvelle demande d’intervention</DialogTitle>
+                <DialogTitle>Nouvelle demande d'intervention</DialogTitle>
                 <DialogDescription>
                   Créez une demande de maintenance pour un véhicule du parc.
                 </DialogDescription>
@@ -457,7 +688,6 @@ export default function MaintenancePage() {
                       <option key={v.id} value={v.immat} />
                     ))}
                   </datalist>
-
                   {newImmat.trim() && (
                     <p className="text-xs text-slate-500">
                       {matchedVehicle
@@ -508,13 +738,52 @@ export default function MaintenancePage() {
                     min="0"
                   />
                 </div>
+
+                {/* Devis PDF upload */}
+                {permissions.canUploadDevis && (
+                  <div className="space-y-2">
+                    <Label htmlFor="devis-pdf">Devis PDF (optionnel)</Label>
+                    <div className="flex items-center gap-3">
+                      <Input
+                        ref={fileInputRef}
+                        id="devis-pdf"
+                        type="file"
+                        accept="application/pdf"
+                        onChange={(e) => setDevisFile(e.target.files?.[0] || null)}
+                        className="flex-1"
+                      />
+                      {devisFile && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            setDevisFile(null);
+                            if (fileInputRef.current) fileInputRef.current.value = "";
+                          }}
+                        >
+                          <X className="w-4 h-4" />
+                        </Button>
+                      )}
+                    </div>
+                    {devisFile && (
+                      <p className="text-xs text-blue-600 flex items-center gap-1">
+                        <FileText className="w-3 h-3" />
+                        {devisFile.name} ({(devisFile.size / 1024).toFixed(0)} Ko)
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="flex justify-end gap-3">
                 <Button variant="outline" onClick={() => setIsDialogOpen(false)}>
                   Annuler
                 </Button>
-                <Button onClick={handleCreateIntervention}>Créer la demande</Button>
+                <Button onClick={handleCreateIntervention} disabled={isCreating}>
+                  {isCreating && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                  {isCreating ? "Création…" : "Créer la demande"}
+                </Button>
               </div>
             </DialogContent>
           </Dialog>
@@ -574,7 +843,7 @@ export default function MaintenancePage() {
               <div>
                 <p className="text-2xl font-bold text-slate-900">
                   {interventions
-                    .filter((i: any) => i.status !== "pending")
+                    .filter((i: any) => i.status !== "pending" && i.status !== "rejected")
                     .reduce((sum: number, i: any) => sum + (Number(i.montant) || 0), 0)
                     .toLocaleString()}{" "}
                   EUR
@@ -590,14 +859,14 @@ export default function MaintenancePage() {
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="all">
-            Toutes ({interventions.filter((i: any) => i.status !== "completed").length})
+            Toutes ({interventions.filter((i: any) => !["completed", "rejected"].includes(i.status)).length})
           </TabsTrigger>
           <TabsTrigger value="validation">À valider ({pendingCount})</TabsTrigger>
           <TabsTrigger value="planning">À planifier ({waitingRdvCount})</TabsTrigger>
           <TabsTrigger value="planned">Planifiés ({plannedCount})</TabsTrigger>
           <TabsTrigger value="history">
             <History className="w-4 h-4 mr-1" />
-            Historique ({completedCount})
+            Historique ({historyCount})
           </TabsTrigger>
         </TabsList>
 
@@ -633,14 +902,21 @@ export default function MaintenancePage() {
                             {intervention.immat}
                           </p>
                         </div>
-                        <Badge variant={statusBadge.variant} className={statusBadge.className}>
-                          {statusBadge.label}
-                        </Badge>
+                        <div className="flex items-center gap-2">
+                          {intervention.devis_path && (
+                            <Badge variant="outline" className="gap-1 text-blue-600 border-blue-300">
+                              <FileText className="w-3 h-3" />
+                              PDF
+                            </Badge>
+                          )}
+                          <Badge variant={statusBadge.variant} className={statusBadge.className}>
+                            {statusBadge.label}
+                          </Badge>
+                        </div>
                       </div>
                     </CardHeader>
 
                     <CardContent className="space-y-4" onClick={(e) => e.stopPropagation()}>
-                      {/* Description */}
                       <div className="flex items-start gap-3">
                         <Wrench className="w-5 h-5 text-slate-400 mt-0.5" />
                         <div>
@@ -651,13 +927,11 @@ export default function MaintenancePage() {
                         </div>
                       </div>
 
-                      {/* Garage */}
                       <div className="flex items-center gap-3">
                         <Building2 className="w-5 h-5 text-slate-400" />
                         <p className="text-sm text-slate-700">{intervention.garage}</p>
                       </div>
 
-                      {/* RDV info si planifié */}
                       {intervention.rdv_date && (
                         <div className="flex items-center gap-3 p-2 bg-green-50 rounded-lg">
                           <Calendar className="w-5 h-5 text-green-600" />
@@ -670,7 +944,6 @@ export default function MaintenancePage() {
                         </div>
                       )}
 
-                      {/* Montant */}
                       <div className="flex items-center gap-3">
                         <Euro className="w-5 h-5 text-slate-400" />
                         <p className="text-lg font-bold text-slate-900">
@@ -678,7 +951,32 @@ export default function MaintenancePage() {
                         </p>
                       </div>
 
-                      {/* Boutons d'action selon status et role */}
+                      {/* Devis download button */}
+                      {intervention.devis_path && permissions.canDownloadDevis && (
+                        <div className="pt-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="w-full gap-2 text-blue-700 border-blue-300 hover:bg-blue-50"
+                            onClick={() => handleDownloadDevis(intervention)}
+                            disabled={downloading === intervention.id}
+                          >
+                            {downloading === intervention.id ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Download className="w-4 h-4" />
+                            )}
+                            Télécharger le devis
+                            {intervention.devis_filename && (
+                              <span className="text-xs text-slate-400 ml-1 truncate max-w-[120px]">
+                                ({intervention.devis_filename})
+                              </span>
+                            )}
+                          </Button>
+                        </div>
+                      )}
+
+                      {/* Action buttons */}
                       {intervention.status === "pending" && permissions.canValidateDevis && (
                         <div className="flex gap-3 pt-4 border-t border-slate-100">
                           <Button
@@ -692,7 +990,7 @@ export default function MaintenancePage() {
                           <Button
                             variant="destructive"
                             className="flex-1"
-                            onClick={() => handleReject(intervention.id, intervention.description)}
+                            onClick={() => openRejectModal(intervention)}
                           >
                             <X className="w-4 h-4 mr-2" />
                             Refuser
@@ -715,13 +1013,23 @@ export default function MaintenancePage() {
 
                       {intervention.status === "planned" && permissions.canCompleteIntervention && (
                         <div className="pt-4 border-t border-slate-100">
-                          <Button
-                            variant="default"
-                            className="w-full"
-                            onClick={() => handleComplete(intervention.id)}
-                          >
+                          <Button variant="default" className="w-full" onClick={() => handleComplete(intervention.id)}>
                             <Check className="w-4 h-4 mr-2" />
-                            Terminer l’intervention
+                            Terminer l'intervention
+                          </Button>
+                        </div>
+                      )}
+
+                      {permissions.canDeleteIntervention && (
+                        <div className="pt-4 border-t border-slate-100">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="w-full text-red-600 border-red-200 hover:bg-red-50"
+                            onClick={() => setDeleteTarget(intervention)}
+                          >
+                            <Trash2 className="w-4 h-4 mr-2" />
+                            Supprimer définitivement
                           </Button>
                         </div>
                       )}
@@ -747,102 +1055,270 @@ export default function MaintenancePage() {
           <div className="space-y-4 py-4">
             <div className="space-y-2">
               <Label htmlFor="rdv-date">Date</Label>
-              <Input
-                id="rdv-date"
-                type="date"
-                value={rdvDate}
-                onChange={(e) => setRdvDate(e.target.value)}
-                required
-              />
+              <Input id="rdv-date" type="date" value={rdvDate} onChange={(e) => setRdvDate(e.target.value)} required />
             </div>
-
             <div className="space-y-2">
               <Label htmlFor="rdv-time">Heure</Label>
-              <Input
-                id="rdv-time"
-                type="time"
-                value={rdvTime}
-                onChange={(e) => setRdvTime(e.target.value)}
-                required
-              />
+              <Input id="rdv-time" type="time" value={rdvTime} onChange={(e) => setRdvTime(e.target.value)} required />
             </div>
-
             <div className="space-y-2">
               <Label htmlFor="rdv-lieu">Lieu / Adresse</Label>
+              <Input id="rdv-lieu" value={rdvLieu} onChange={(e) => setRdvLieu(e.target.value)} placeholder="Adresse du garage" required />
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-3">
+            <Button variant="outline" onClick={() => setRdvModalOpen(false)}>Annuler</Button>
+            <Button onClick={handlePlanRdv}>Confirmer le RDV</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal Refuser Devis */}
+      <Dialog open={rejectModalOpen} onOpenChange={setRejectModalOpen}>
+        <DialogContent className="sm:max-w-[450px]">
+          <DialogHeader>
+            <DialogTitle>Refuser le devis</DialogTitle>
+            <DialogDescription>
+              {rejectTarget?.vehicule} - {rejectTarget?.immat}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="reject-reason">Motif du refus (optionnel)</Label>
               <Input
-                id="rdv-lieu"
-                value={rdvLieu}
-                onChange={(e) => setRdvLieu(e.target.value)}
-                placeholder="Adresse du garage"
-                required
+                id="reject-reason"
+                value={rejectReason}
+                onChange={(e) => setRejectReason(e.target.value)}
+                placeholder="Ex: Montant trop élevé, devis incomplet…"
               />
             </div>
           </div>
 
           <div className="flex justify-end gap-3">
-            <Button variant="outline" onClick={() => setRdvModalOpen(false)}>
+            <Button variant="outline" onClick={() => setRejectModalOpen(false)}>
               Annuler
             </Button>
-            <Button onClick={handlePlanRdv}>Confirmer le RDV</Button>
+            <Button variant="destructive" onClick={handleRejectConfirm} disabled={rejecting}>
+              {rejecting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              Confirmer le refus
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal Supprimer Intervention */}
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle className="text-red-600">Supprimer l'intervention</DialogTitle>
+            <DialogDescription>
+              Êtes-vous sûr de vouloir supprimer définitivement cette intervention ?
+              <br /><br />
+              <strong className="text-slate-900">{deleteTarget?.description}</strong>
+              {" — "}{deleteTarget?.immat}
+              <br /><br />
+              Cette action est <strong>irréversible</strong>.
+              {deleteTarget?.devis_path && " Le devis PDF associé sera aussi supprimé."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-3 pt-4">
+            <Button variant="outline" onClick={() => setDeleteTarget(null)} disabled={deleting}>
+              Annuler
+            </Button>
+            <Button variant="destructive" onClick={handleDeleteIntervention} disabled={deleting}>
+              {deleting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              Supprimer définitivement
+            </Button>
           </div>
         </DialogContent>
       </Dialog>
 
       {/* Sheet Detail Intervention */}
       <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
-        <SheetContent>
-          <SheetHeader>
-            <SheetTitle>{(detailIntervention as any)?.vehicule}</SheetTitle>
-            <SheetDescription className="font-mono text-blue-600">
-              {(detailIntervention as any)?.immat}
-            </SheetDescription>
+        <SheetContent className="sm:max-w-lg overflow-y-auto">
+          <SheetHeader className="pb-0">
+            <div className="flex items-start justify-between gap-3">
+              <div className="space-y-1">
+                <SheetTitle className="text-xl">{(detailIntervention as any)?.vehicule}</SheetTitle>
+                <SheetDescription className="font-mono text-base font-semibold text-blue-600">
+                  {(detailIntervention as any)?.immat}
+                </SheetDescription>
+              </div>
+              {detailIntervention && (
+                <Badge className={`shrink-0 ${getStatusBadge((detailIntervention as any).status).className}`}>
+                  {getStatusBadge((detailIntervention as any).status).label}
+                </Badge>
+              )}
+            </div>
           </SheetHeader>
 
           {detailIntervention && (
-            <div className="mt-6 space-y-4">
-              <div>
-                <p className="text-sm text-slate-500">Statut</p>
-                <Badge className={getStatusBadge((detailIntervention as any).status).className}>
-                  {getStatusBadge((detailIntervention as any).status).label}
-                </Badge>
+            <div className="mt-6 space-y-6">
+              {/* Résumé */}
+              <div className="space-y-4">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Résumé</h3>
+                <div className="grid gap-3">
+                  <div className="flex items-start gap-3 p-3 bg-slate-50 rounded-lg">
+                    <Wrench className="w-4 h-4 text-slate-400 mt-0.5 shrink-0" />
+                    <div>
+                      <p className="text-xs text-slate-500">Description</p>
+                      <p className="font-medium text-slate-900">{(detailIntervention as any).description}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-3 p-3 bg-slate-50 rounded-lg">
+                    <Building2 className="w-4 h-4 text-slate-400 mt-0.5 shrink-0" />
+                    <div>
+                      <p className="text-xs text-slate-500">Garage</p>
+                      <p className="font-medium text-slate-900">{(detailIntervention as any).garage}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-3 p-3 bg-slate-50 rounded-lg">
+                    <Euro className="w-4 h-4 text-slate-400 mt-0.5 shrink-0" />
+                    <div>
+                      <p className="text-xs text-slate-500">Montant</p>
+                      <p className="text-lg font-bold text-slate-900">
+                        {(Number((detailIntervention as any).montant) || 0).toLocaleString("fr-FR")} EUR
+                      </p>
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              <div>
-                <p className="text-sm text-slate-500">Description</p>
-                <p className="font-medium">{(detailIntervention as any).description}</p>
-              </div>
+              <Separator />
 
-              <div>
-                <p className="text-sm text-slate-500">Garage</p>
-                <p className="font-medium">{(detailIntervention as any).garage}</p>
-              </div>
-
-              <div>
-                <p className="text-sm text-slate-500">Montant</p>
-                <p className="text-xl font-bold">
-                  {(Number((detailIntervention as any).montant) || 0).toLocaleString()} EUR
-                </p>
-              </div>
-
-              <div>
-                <p className="text-sm text-slate-500">Date de création</p>
-                <p>{(detailIntervention as any).date_creation || "-"}</p>
-              </div>
-
+              {/* Rendez-vous */}
               {(detailIntervention as any).rdv_date && (
                 <>
-                  <div>
-                    <p className="text-sm text-slate-500">Date RDV</p>
-                    <p className="font-medium">
-                      {new Date((detailIntervention as any).rdv_date).toLocaleString("fr-FR")}
-                    </p>
+                  <div className="space-y-3">
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Rendez-vous</h3>
+                    <div className="p-4 bg-green-50 rounded-lg border border-green-200 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <Calendar className="w-4 h-4 text-green-600 shrink-0" />
+                        <p className="font-semibold text-green-800">
+                          {new Date((detailIntervention as any).rdv_date).toLocaleString("fr-FR", {
+                            weekday: "long",
+                            day: "numeric",
+                            month: "long",
+                            year: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </p>
+                      </div>
+                      {(detailIntervention as any).rdv_lieu && (
+                        <div className="flex items-center gap-2">
+                          <MapPin className="w-4 h-4 text-green-600 shrink-0" />
+                          <p className="text-green-700">{(detailIntervention as any).rdv_lieu}</p>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-sm text-slate-500">Lieu RDV</p>
-                    <p>{(detailIntervention as any).rdv_lieu || "-"}</p>
-                  </div>
+                  <Separator />
                 </>
               )}
+
+              {/* Refus */}
+              {(detailIntervention as any).status === "rejected" && (
+                <>
+                  <div className="space-y-3">
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-red-400">Refus</h3>
+                    <div className="p-4 bg-red-50 rounded-lg border border-red-200 space-y-2">
+                      <p className="text-sm font-semibold text-red-800">Devis refusé</p>
+                      {(detailIntervention as any).rejected_reason && (
+                        <p className="text-sm text-red-700">
+                          <span className="font-medium">Motif :</span> {(detailIntervention as any).rejected_reason}
+                        </p>
+                      )}
+                      {(detailIntervention as any).rejected_at && (
+                        <p className="text-xs text-red-500">
+                          Refusé le {new Date((detailIntervention as any).rejected_at).toLocaleString("fr-FR")}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <Separator />
+                </>
+              )}
+
+              {/* Devis */}
+              <div className="space-y-3">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Devis</h3>
+                {detailIntervention.devis_path ? (
+                  <div className="p-4 bg-blue-50 rounded-lg border border-blue-200 space-y-3">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-blue-100 rounded-lg">
+                        <FileText className="w-5 h-5 text-blue-600" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-blue-900">Devis joint</p>
+                        <p className="text-xs text-blue-600 truncate">
+                          {detailIntervention.devis_filename || "document.pdf"}
+                        </p>
+                        {detailIntervention.devis_uploaded_at && (
+                          <p className="text-xs text-blue-500">
+                            Ajouté le {new Date(detailIntervention.devis_uploaded_at).toLocaleString("fr-FR")}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    {permissions.canDownloadDevis && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="w-full gap-2 text-blue-700 border-blue-300 hover:bg-blue-100"
+                        onClick={() => handleDownloadDevis(detailIntervention)}
+                        disabled={downloading === detailIntervention.id}
+                      >
+                        {downloading === detailIntervention.id ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Download className="w-4 h-4" />
+                        )}
+                        Ouvrir le devis
+                      </Button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="p-4 bg-slate-50 rounded-lg border border-slate-200">
+                    <p className="text-sm text-slate-500 flex items-center gap-2">
+                      <FileText className="w-4 h-4" />
+                      Aucun devis joint
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <Separator />
+
+              {/* Informations */}
+              <div className="space-y-3">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Informations</h3>
+                <div className="grid gap-2 text-sm">
+                  <div className="flex items-center gap-2 text-slate-600">
+                    <Clock className="w-3.5 h-3.5 text-slate-400" />
+                    <span>Créé le {(detailIntervention as any).date_creation
+                      ? new Date((detailIntervention as any).date_creation).toLocaleString("fr-FR")
+                      : "-"}</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-slate-400">
+                    <Hash className="w-3.5 h-3.5" />
+                    <span className="font-mono text-xs select-all">{detailIntervention.id}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Actions bas de panneau */}
+              <div className="pt-2">
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => setDetailOpen(false)}
+                >
+                  Fermer
+                </Button>
+              </div>
             </div>
           )}
         </SheetContent>

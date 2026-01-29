@@ -30,13 +30,13 @@ import {
 } from "@/components/ui/sheet";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { AlertTriangle, Eye, Pencil, Plus, Loader2, History, Wrench } from "lucide-react";
+import { AlertTriangle, Eye, Pencil, Plus, Loader2, History, Wrench, Trash2, FileDown } from "lucide-react";
 import { differenceInDays, isPast, parseISO } from "date-fns";
-import { supabase, type Vehicle, type VehicleType, VEHICLE_CONTROLS } from "@/lib/supabase";
-import { INTERVENTIONS } from "@/lib/data";
+import { supabase, type Vehicle, type VehicleType, type Intervention, VEHICLE_CONTROLS } from "@/lib/supabase";
 import { toast } from "sonner";
 import { RoleSwitcher, useRole } from "@/components/RoleSwitcher";
 import { getPermissions } from "@/lib/role";
+import { exportControlsPdf } from "@/lib/pdf";
 
 const today = new Date();
 
@@ -140,6 +140,7 @@ export default function ParcPage() {
   const permissions = getPermissions(role);
 
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [allInterventions, setAllInterventions] = useState<Intervention[]>([]);
   const [loading, setLoading] = useState(true);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -149,6 +150,11 @@ export default function ParcPage() {
   const [viewOpen, setViewOpen] = useState(false);
   const [editVehicle, setEditVehicle] = useState<Vehicle | null>(null);
   const [editOpen, setEditOpen] = useState(false);
+
+  // Delete confirmation
+  const [deleteVehicle, setDeleteVehicle] = useState<Vehicle | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Form state for create
   const [formData, setFormData] = useState({
@@ -196,9 +202,18 @@ export default function ParcPage() {
     }
   };
 
+  const fetchInterventions = async () => {
+    const { data } = await supabase
+      .from("interventions")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (data) setAllInterventions(data as Intervention[]);
+  };
+
   // Charger les vehicules au montage du composant
   useEffect(() => {
     fetchVehicles();
+    fetchInterventions();
   }, []);
 
   // Filtrer selon le parametre URL
@@ -320,9 +335,35 @@ export default function ParcPage() {
     }
   };
 
+  // Supprimer un vehicule
+  const handleDeleteVehicle = async () => {
+    if (!deleteVehicle) return;
+    setIsDeleting(true);
+    try {
+      const res = await fetch("/api/admin/delete-vehicle", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vehicleId: deleteVehicle.id }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error);
+      toast.success("Véhicule supprimé", {
+        description: `${deleteVehicle.immat} a été supprimé définitivement${json.deletedInterventions > 0 ? ` (${json.deletedInterventions} intervention(s) supprimée(s))` : ""}`,
+      });
+      setDeleteOpen(false);
+      setDeleteVehicle(null);
+      await fetchVehicles();
+      await fetchInterventions();
+    } catch (err: any) {
+      toast.error("Erreur de suppression", { description: err?.message });
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   // Historique interventions pour un vehicule
   const getVehicleInterventions = (immat: string) => {
-    return INTERVENTIONS.filter((i) => i.immat === immat);
+    return allInterventions.filter((i) => i.immat === immat);
   };
 
   // Statistiques
@@ -346,6 +387,23 @@ export default function ParcPage() {
         </div>
 
         <div className="flex items-center gap-4">
+          <Button
+            variant="outline"
+            onClick={() => {
+              try {
+                exportControlsPdf(vehicles);
+                toast.success("PDF contrôles exporté");
+              } catch (err: any) {
+                console.error("[PDF]", err);
+                toast.error("Erreur export PDF");
+              }
+            }}
+            disabled={vehicles.length === 0}
+          >
+            <FileDown className="w-4 h-4 mr-2" />
+            Exporter PDF contrôles
+          </Button>
+
           <RoleSwitcher onRoleChange={setRole} />
 
           {/* Dialog Ajouter un vehicule */}
@@ -676,6 +734,19 @@ export default function ParcPage() {
                               <Pencil className="w-4 h-4" />
                             </Button>
                           )}
+                          {permissions.canDeleteVehicle && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                              onClick={() => {
+                                setDeleteVehicle(vehicle);
+                                setDeleteOpen(true);
+                              }}
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
+                          )}
                         </div>
                       </TableCell>
                     </TableRow>
@@ -759,7 +830,7 @@ export default function ParcPage() {
                             <div>
                               <p className="font-medium text-sm">{intervention.description}</p>
                               <p className="text-xs text-slate-500">{intervention.garage}</p>
-                              <p className="text-xs text-slate-400">{intervention.dateCreation}</p>
+                              <p className="text-xs text-slate-400">{intervention.date_creation ? new Date(intervention.date_creation).toLocaleDateString("fr-FR") : "-"}</p>
                             </div>
                           </div>
                           <div className="text-right">
@@ -769,6 +840,8 @@ export default function ParcPage() {
                               className={
                                 intervention.status === "completed"
                                   ? "bg-slate-100 text-slate-600"
+                                  : intervention.status === "rejected"
+                                  ? "bg-red-100 text-red-700"
                                   : intervention.status === "planned"
                                   ? "bg-green-100 text-green-700"
                                   : "bg-orange-100 text-orange-700"
@@ -787,6 +860,40 @@ export default function ParcPage() {
           )}
         </SheetContent>
       </Sheet>
+
+      {/* Dialog Confirm Delete Vehicle */}
+      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle className="text-red-600">Supprimer le véhicule</DialogTitle>
+            <DialogDescription>
+              Êtes-vous sûr de vouloir supprimer définitivement le véhicule{" "}
+              <strong className="text-slate-900">{deleteVehicle?.immat}</strong> ?
+              <br />
+              <br />
+              Cette action est <strong>irréversible</strong>. Toutes les interventions
+              liées et leurs devis seront également supprimés.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-3 pt-4">
+            <Button
+              variant="outline"
+              onClick={() => setDeleteOpen(false)}
+              disabled={isDeleting}
+            >
+              Annuler
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDeleteVehicle}
+              disabled={isDeleting}
+            >
+              {isDeleting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              Supprimer définitivement
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Dialog Edit Vehicle */}
       <Dialog open={editOpen} onOpenChange={setEditOpen}>

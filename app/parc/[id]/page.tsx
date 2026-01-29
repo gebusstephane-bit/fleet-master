@@ -31,11 +31,24 @@ import {
   Shield,
   Gauge,
   Thermometer,
+  Trash2,
 } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { supabase, type Vehicle, type Intervention, VEHICLE_CONTROLS } from "@/lib/supabase";
 import { toast } from "sonner";
+import { Download } from "lucide-react";
+import { useRole } from "@/components/RoleSwitcher";
+import { getPermissions } from "@/lib/role";
 import { differenceInDays, isPast, parseISO, format, parse, isValid } from "date-fns";
 import { fr } from "date-fns/locale";
+import { FileDown } from "lucide-react";
+import { exportVehiclePdf } from "@/lib/pdf";
 
 // Helper pour le statut de date
 function getDateStatus(dateString: string | null): {
@@ -132,16 +145,50 @@ function safeFormatRdvDate(rdvDate: any) {
   if (isNaN(d.getTime())) return null;
   return format(d, "dd/MM HH:mm");
 }
-/* ✅ FIN AJOUT */
+const DEVIS_BUCKET = "devis-interventions";
 
 export default function VehicleDetailPage() {
   const params = useParams();
   const router = useRouter();
   const vehicleId = params.id as string;
 
+  const { role } = useRole();
+  const permissions = getPermissions(role);
+
   const [vehicle, setVehicle] = useState<Vehicle | null>(null);
   const [interventions, setInterventions] = useState<Intervention[]>([]);
   const [loading, setLoading] = useState(true);
+  const [downloading, setDownloading] = useState<string | null>(null);
+
+  // Delete states
+  const [deleteVehicleOpen, setDeleteVehicleOpen] = useState(false);
+  const [isDeletingVehicle, setIsDeletingVehicle] = useState(false);
+  const [deleteInterventionTarget, setDeleteInterventionTarget] = useState<Intervention | null>(null);
+  const [isDeletingIntervention, setIsDeletingIntervention] = useState(false);
+
+  async function handleDownloadDevis(intervention: Intervention) {
+    const path = intervention.devis_path;
+    if (!path) return;
+    setDownloading(intervention.id);
+    try {
+      const { data, error } = await supabase.storage
+        .from(DEVIS_BUCKET)
+        .createSignedUrl(path, 60);
+      if (error || !data?.signedUrl) {
+        console.error("[DEVIS] Signed URL error:", error);
+        toast.error("Impossible de télécharger le devis", {
+          description: error?.message || "URL non générée",
+        });
+        return;
+      }
+      window.open(data.signedUrl, "_blank");
+    } catch (err: any) {
+      console.error("[DEVIS] Download error:", err);
+      toast.error("Erreur téléchargement", { description: err?.message });
+    } finally {
+      setDownloading(null);
+    }
+  }
 
   // Charger les donnees
   useEffect(() => {
@@ -183,6 +230,49 @@ export default function VehicleDetailPage() {
       fetchData();
     }
   }, [vehicleId]);
+
+  // Delete vehicle handler
+  const handleDeleteVehicle = async () => {
+    if (!vehicle) return;
+    setIsDeletingVehicle(true);
+    try {
+      const res = await fetch("/api/admin/delete-vehicle", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vehicleId: vehicle.id }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error);
+      toast.success("Véhicule supprimé définitivement");
+      router.push("/parc");
+    } catch (err: any) {
+      toast.error("Erreur de suppression", { description: err?.message });
+    } finally {
+      setIsDeletingVehicle(false);
+    }
+  };
+
+  // Delete intervention handler
+  const handleDeleteIntervention = async () => {
+    if (!deleteInterventionTarget) return;
+    setIsDeletingIntervention(true);
+    try {
+      const res = await fetch("/api/admin/delete-intervention", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ interventionId: deleteInterventionTarget.id }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error);
+      toast.success("Intervention supprimée définitivement");
+      setDeleteInterventionTarget(null);
+      setInterventions((prev) => prev.filter((i) => i.id !== deleteInterventionTarget.id));
+    } catch (err: any) {
+      toast.error("Erreur de suppression", { description: err?.message });
+    } finally {
+      setIsDeletingIntervention(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -253,6 +343,34 @@ export default function VehicleDetailPage() {
             </div>
             <p className="text-slate-600 mt-1">{vehicle.marque}</p>
           </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              try {
+                exportVehiclePdf(vehicle, interventions);
+                toast.success("PDF exporté");
+              } catch (err: any) {
+                console.error("[PDF]", err);
+                toast.error("Erreur export PDF", { description: err?.message });
+              }
+            }}
+          >
+            <FileDown className="w-4 h-4 mr-2" />
+            Exporter PDF
+          </Button>
+          {permissions.canDeleteVehicle && (
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => setDeleteVehicleOpen(true)}
+            >
+              <Trash2 className="w-4 h-4 mr-2" />
+              Supprimer
+            </Button>
+          )}
         </div>
       </div>
 
@@ -436,6 +554,10 @@ export default function VehicleDetailPage() {
                         <TableHead>Statut</TableHead>
                         <TableHead>Lieu / Garage</TableHead>
                         <TableHead className="text-right">Montant</TableHead>
+                        <TableHead>Devis</TableHead>
+                        {permissions.canDeleteIntervention && (
+                          <TableHead className="text-right">Action</TableHead>
+                        )}
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -479,6 +601,38 @@ export default function VehicleDetailPage() {
                                 {(intervention.montant || 0).toLocaleString()} EUR
                               </span>
                             </TableCell>
+                            <TableCell>
+                              {intervention.devis_path ? (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="gap-1 text-blue-700 border-blue-300 hover:bg-blue-50"
+                                  onClick={() => handleDownloadDevis(intervention)}
+                                  disabled={downloading === intervention.id}
+                                >
+                                  {downloading === intervention.id ? (
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                  ) : (
+                                    <Download className="w-4 h-4" />
+                                  )}
+                                  PDF
+                                </Button>
+                              ) : (
+                                <span className="text-xs text-slate-400">—</span>
+                              )}
+                            </TableCell>
+                            {permissions.canDeleteIntervention && (
+                              <TableCell className="text-right">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                                  onClick={() => setDeleteInterventionTarget(intervention)}
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </Button>
+                              </TableCell>
+                            )}
                           </TableRow>
                         );
                       })}
@@ -532,6 +686,57 @@ export default function VehicleDetailPage() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      {/* Dialog Confirm Delete Vehicle */}
+      <Dialog open={deleteVehicleOpen} onOpenChange={setDeleteVehicleOpen}>
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle className="text-red-600">Supprimer le véhicule</DialogTitle>
+            <DialogDescription>
+              Êtes-vous sûr de vouloir supprimer définitivement{" "}
+              <strong className="text-slate-900">{vehicle?.immat}</strong> ?
+              <br /><br />
+              Cette action est <strong>irréversible</strong>. Toutes les interventions
+              liées ({interventions.length}) et leurs devis seront également supprimés.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-3 pt-4">
+            <Button variant="outline" onClick={() => setDeleteVehicleOpen(false)} disabled={isDeletingVehicle}>
+              Annuler
+            </Button>
+            <Button variant="destructive" onClick={handleDeleteVehicle} disabled={isDeletingVehicle}>
+              {isDeletingVehicle && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              Supprimer définitivement
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog Confirm Delete Intervention */}
+      <Dialog open={!!deleteInterventionTarget} onOpenChange={(open) => { if (!open) setDeleteInterventionTarget(null); }}>
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle className="text-red-600">Supprimer l'intervention</DialogTitle>
+            <DialogDescription>
+              Êtes-vous sûr de vouloir supprimer définitivement cette intervention ?
+              <br /><br />
+              <strong className="text-slate-900">{deleteInterventionTarget?.description}</strong>
+              <br />
+              Cette action est <strong>irréversible</strong>.
+              {deleteInterventionTarget?.devis_path && " Le devis PDF associé sera aussi supprimé."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-3 pt-4">
+            <Button variant="outline" onClick={() => setDeleteInterventionTarget(null)} disabled={isDeletingIntervention}>
+              Annuler
+            </Button>
+            <Button variant="destructive" onClick={handleDeleteIntervention} disabled={isDeletingIntervention}>
+              {isDeletingIntervention && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              Supprimer définitivement
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
